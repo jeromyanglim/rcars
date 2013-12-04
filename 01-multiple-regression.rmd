@@ -1,0 +1,162 @@
+```{r import_libraries, warning=FALSE, message=FALSE, }
+library(foreign) # read.spss
+library(psych) # describe 
+library(Hmisc) # rcorr 
+library(QuantPsyc) # lm.beta
+library(car) # vif, durbinWatsonTest
+library(MASS) # studres
+library(lmSupport) #lm.sumSquares
+library(perturb) # colldiag
+```
+
+In order to emulate SPSS output, it is necessary to install several add-on packages. The above `library` commands load the packages into your R workspace. I've highlighted in the comment the names of the functions that are used in this script. 
+
+You may not have the above packages installed.
+If not, run commands like:
+* `install.packages('foreign')`
+* `install.packages('psych')`
+* etc.
+
+for each of the above packages not installed or use the "packages" tab in RStudio to install.
+
+Note also that much of this analysis could be performed using [Rcommander](http://www.rcommander.com/) using a more SPSS-style GUI environment.
+
+# Import and prepare data
+```{r import_data}
+cars_raw <- read.spss('cars.sav', to.data.frame=TRUE)
+# get rid of missing data listwise
+cars <- na.omit(cars_raw[,c('accel', 'mpg', 'engine', 'horse', 'weight')])
+```
+
+Ensure that `cars.sav` is the working directory.
+
+# Quick look at data
+```{r quick_look}
+# note the need to deal with missing data
+psych::describe(cars_raw)
+
+dim(cars)
+head(cars)
+str(cars)
+```
+
+# Fit model
+```{r}
+fit <- lm(accel ~ mpg + engine + horse + weight, data=cars)
+```
+
+## Descriptive Statistics
+```{r}
+# Descriptive statistics
+psych::describe(cars)
+
+# correlations
+cor(cars)
+rcorr(as.matrix(cars)) # include sig test for all correlations
+# scatterplot matrix if you want
+pairs.panels(cars)
+```
+
+## Summary of model
+```{r}
+# r-square, adjusted r-square, std. error of estimate,
+# overall ANOVA, df, p, 
+# unstandardised coefficients, sig tests
+summary(fit)
+### additional info in terms of sums of squares
+anova(fit)
+
+# 95% confidence intervals (defaults to 95%)
+confint(fit)
+# but can specify different confidence intervals
+confint(fit, level=.99)
+
+# standardised coefficients
+lm.beta(fit)
+
+# or you could do it manually
+zcars <- data.frame(scale(cars)) # make all variables z-scores
+zfit <- lm(accel ~ mpg + engine + horse + weight, data=zcars)
+coef(zfit)[-1]
+
+# correlations: zero-order, semi-partial, partial
+# obscure function seems to do it
+sqrt(lm.sumSquares(fit)[,c(2,3)])
+
+# or use own function 
+cor_lm <- function(fit) {
+    dv <- names(fit$model)[1]
+    dv_data <- fit$model[,dv]
+    ivs <- names(fit$model)[-1]
+    iv_data <- fit$model[, ivs]
+    x <- fit$model
+    x_omit <- lapply(ivs, function(X) x[,c(dv, setdiff(ivs, X))])
+    names(x_omit) <- ivs
+    lapply(x_omit, head)
+    fits_omit <- lapply(x_omit, function(X) 
+        lm(as.formula(paste(dv, "~ .")), data=X))
+    resid_omit <- sapply(fits_omit, resid)
+    iv_omit <- lapply(ivs, function(X) 
+        lm(as.formula(paste(X, "~ .")), data=iv_data))
+    resid_iv_omit <- sapply(iv_omit, resid)
+    
+    results <- sapply(seq(ivs), function(i) 
+        c(zeroorder=cor(iv_data[,i], dv_data), 
+          partial= cor(resid_iv_omit[,i], resid_omit[,i]),
+          semipartial=cor(resid_iv_omit[,i], dv_data) 
+          ))
+    results <- data.frame(results)
+    
+    names(results) <- ivs
+    results <- data.frame(t(results))
+    results
+}
+        
+round(cor_lm(fit), 3)
+```
+
+## Assumption testing
+```{r}
+# Durbin Watson test
+durbinWatsonTest(fit)
+
+# vif
+vif(fit)
+
+# tolerance
+1/vif(fit)
+
+# collinearity diagnostics
+colldiag(fit)
+
+# residual statistics
+rfit <- data.frame(predicted=predict(fit),  
+           residuals=resid(fit), 
+           studentised_residuals=studres(fit))
+psych::describe(rfit)
+
+# distribution of standarised residuals
+zresid <- scale(resid(fit))
+hist(zresid)
+# or add normal curve
+# http://www.statmethods.net/graphs/density.html 
+hist_with_normal_curve <- function(x, breaks=24) {
+    h <- hist(zresid, breaks=breaks, col='lightblue')
+    xfit<-seq(min(x),max(x),length=40) 
+    yfit<-dnorm(xfit,mean=mean(x),sd=sd(x)) 
+    yfit <- yfit*diff(h$mids[1:2])*length(x) 
+    lines(xfit, yfit, lwd=2)
+}
+hist_with_normal_curve(zresid)
+
+# normality of residuals
+qqnorm(zresid)
+abline(a=0, b=1)
+
+# plot predicted by residual 
+plot(predict(fit), resid(fit))
+
+# plot dependent by residual
+plot(cars$accel, resid(fit)) 
+```
+
